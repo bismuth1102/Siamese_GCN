@@ -1,0 +1,293 @@
+from __future__ import division
+from __future__ import print_function
+
+import time
+import argparse
+import numpy as np
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+
+from utils import load_data, accuracy, auc, save_pred
+from torch.autograd import Variable
+from models import GCN_single, GCN_hinge
+
+# Training settings
+parser = argparse.ArgumentParser()
+parser.add_argument('--no-cuda', action='store_true', default=False,
+                    help='Disables CUDA training.')
+parser.add_argument('--fastmode', action='store_true', default=True,
+                    help='Validate during training pass.')
+parser.add_argument('--seed', type=int, default=42, help='Random seed.')
+parser.add_argument('--epochs', type=int, default=1,
+                    help='Number of epochs to train.')
+parser.add_argument('--lr', type=float, default=0.001,
+                    help='Initial learning rate.')
+parser.add_argument('--weight_decay', type=float, default=5e-5,
+                    help='Weight decay (L2 loss on parameters).')
+parser.add_argument('--hidden', type=int, default=16,
+                    help='Number of hidden units.')
+parser.add_argument('--dropout', type=float, default=0.5,
+                    help='Dropout rate (1 - keep probability).')
+parser.add_argument('--start', type=int, default=0,
+                    help='start in which turn')
+parser.add_argument('--end', type=int, default=0,
+                    help='end in which turn')
+parser.add_argument('--file', type=str, default="default.txt",
+                    help='file name')
+
+pair_num = 2
+phase3 = False
+single_loss_list = []
+
+args = parser.parse_args()
+args.cuda = not args.no_cuda and torch.cuda.is_available()
+
+np.random.seed(args.seed)
+torch.manual_seed(args.seed)
+if args.cuda:
+    torch.cuda.manual_seed(args.seed)
+
+
+def train_single():
+    output_list = []
+
+    t = time.time()
+    model_single.train()
+
+    # optimize two by two
+    for i in range(len(train_adj_list)):
+        optimizer_single.zero_grad()
+
+        adj = torch.Tensor(train_adj_list[i])
+        feature = torch.Tensor(train_feature_list[i])
+        output = model_single(feature, adj)
+        output.squeeze_(0)
+        output.squeeze_(0)
+        loss_train = F.binary_cross_entropy_with_logits(output, torch.Tensor([train_label_list[i]]))
+
+        loss_train.backward()
+        optimizer_single.step()
+
+    # after one optimization, print the loss on all train samples
+    if phase3:
+        for i in range(len(train_adj_list)):
+            adj = torch.Tensor(train_adj_list[i])
+            feature = torch.Tensor(train_feature_list[i])
+            output = model_single(feature, adj)
+            output_list.append(output)
+        output_list = torch.Tensor(output_list)
+        loss_train = F.binary_cross_entropy_with_logits(output_list, torch.Tensor(train_label_list))
+        print("single_train_loss:", loss_train)
+
+        if len(single_loss_list)>=5:
+            single_loss_list.pop(0)
+            single_loss_list.append(loss_train)
+            if (max(loss_list)-min(loss_list))<0.05:
+                print("convergence!")
+                return True
+            else:
+                return False
+        else:
+            single_loss_list.append(loss_train)
+
+
+def test_single(turn):
+    output_list = []
+
+    model_single.eval()
+    for i in range(len(test_adj_list)):
+        adj = torch.Tensor(test_adj_list[i])
+        feature = torch.Tensor(test_feature_list[i])
+        output = model_single(feature, adj)
+        output_list.append(output)
+    output_list = torch.Tensor(output_list)
+    # loss_test = F.binary_cross_entropy_with_logits(output_list, torch.Tensor(test_label_list))
+    # print("single_test_loss:", loss_test)
+
+    labels = torch.Tensor(test_label_list)
+    labels.unsqueeze_(0)
+    output_list.unsqueeze_(0)
+    test_accuracy = accuracy(output_list.t(), labels.t())
+    print()
+
+    print("test_accuracy:", test_accuracy)
+    fo.write(str(test_accuracy))
+    fo.write("\n")
+    
+    print()
+    if phase3:
+        save_pred(turn, output_list.t())
+    return test_accuracy
+
+
+# # get CosineSimilarity in pairs, save in a list
+# def get_cos_list(output_list, epoch):
+#     cos_list = []
+#     for i in range(len(output_list)):
+#         for j in range(i+1+pair_num*epoch, i+1+pair_num+pair_num*epoch):
+#             j = j%len(output_list)
+
+#             cos = nn.CosineSimilarity(dim=1, eps=1e-6)
+#             cos_list.append([cos(output_list[i], output_list[j])])
+
+#     cos_list = torch.Tensor(cos_list)
+#     return cos_list
+
+
+def train_hinge(epoch):
+    output_list = []
+    label = 0
+    train_labels = [] #Cn_2 elements, ground truth for cos pairs in train
+
+    t = time.time()
+    model_hinge.train()
+
+    # optimize two by two
+    for i in range(len(train_adj_list)):
+        for j in range(i+1+pair_num*epoch, i+1+pair_num+pair_num*epoch):
+            j = j%len(train_adj_list)
+
+            optimizer_hinge.zero_grad()
+
+            adj1 = torch.Tensor(train_adj_list[i])
+            feature1 = torch.Tensor(train_feature_list[i])
+            output1 = model_hinge(feature1, adj1)
+            output1.squeeze_(0)
+
+            adj2 = torch.Tensor(train_adj_list[j])
+            feature2 = torch.Tensor(train_feature_list[j])
+            output2 = model_hinge(feature2, adj2)
+            output2.squeeze_(0)
+
+            if train_label_list[i]==train_label_list[j]:
+                label = [1]
+            else:
+                label = [-1]
+            train_labels.append(label)
+            label = torch.Tensor(label)
+
+            cos = nn.CosineSimilarity(dim=1, eps=1e-6)
+            res_cos = cos(output1, output2)
+            lossF = torch.nn.MarginRankingLoss(margin=0)
+            loss_train = lossF(res_cos, torch.Tensor([0]), torch.Tensor(label))
+
+            loss_train.backward()
+            optimizer_hinge.step()
+
+    # # after one optimization, print the loss on all train samples
+    # for i in range(len(train_adj_list)):
+    #     adj = torch.Tensor(train_adj_list[i])
+    #     # adj = train_adj_list[i]
+    #     feature = torch.Tensor(train_feature_list[i])
+    #     output = model_hinge(feature, adj)
+    #     output.squeeze_(0)
+    #     output_list.append(output)
+
+    # cos_list = get_cos_list(output_list, epoch)
+    # train_labels = torch.Tensor(train_labels)
+
+    # lossF = torch.nn.MarginRankingLoss(margin=0)
+    # # print("cos_list", cos_list.shape)
+    # # print("train_labels", train_labels.shape)
+    # loss_train = lossF(cos_list, torch.Tensor([0]), train_labels)
+
+    # print(loss_train)
+
+
+# def test_hinge():
+#     output_list = []
+#     label = 0
+#     test_labels = [] #Cn_2 elements, ground truth for cos pairs in test
+
+#     model_hinge.eval()
+#     for i in range(len(test_adj_list)):
+#         adj = torch.Tensor(test_adj_list[i])
+#         feature = torch.Tensor(test_feature_list[i])
+#         output = model_hinge(feature, adj)
+#         output.squeeze_(0)
+#         output_list.append(output)
+
+#     for i in range(len(test_adj_list)):
+#         for j in range(i+1, i+1+pair_num):
+#             j = j%len(test_adj_list)
+
+#             if test_label_list[i]==test_label_list[j]:
+#                 test_labels.append([1])
+#             else:
+#                 test_labels.append([-1])
+            
+
+#     cos_list = get_cos_list(output_list, 0)
+#     test_labels = torch.Tensor(test_labels)
+
+#     lossF = torch.nn.MarginRankingLoss(margin=0)
+#     loss_test = lossF(cos_list, torch.Tensor([0]), test_labels)
+
+#     print("test_loss:", loss_test)
+#     print("auc:", auc(cos_list, test_labels))
+
+
+for turn in range(args.start, args.end):
+    # Load data
+    train_adj_list, train_feature_list, train_label_list, test_adj_list, test_feature_list, test_label_list = load_data(turn)
+    fo = open(args.file, "w")
+
+    model_single = GCN_single(nfeat=4,
+                nhid=args.hidden,
+                nclass=2,
+                dropout=args.dropout)
+    optimizer_single = optim.Adam(model_single.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+
+    for epoch in range(args.epochs):
+        print("turn:", turn, ", epoch:", epoch)
+        train_single()
+        test_accuracy = test_single(turn)
+        if (epoch>=10 and test_accuracy>=0.8) or epoch>=20:
+        # if test_accuracy>=0.6:
+            break
+
+    print("******************")
+
+    model_hinge = GCN_hinge(nfeat=4,
+                nhid=args.hidden,
+                nclass=2,
+                dropout=args.dropout,
+                gc2_weight=model_single.gc2.weight)
+    optimizer_hinge = optim.Adam(model_hinge.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+
+     # Train model_hinge
+    t_total = time.time()
+    for epoch in range(args.epochs):
+        print("turn:", turn, ", epoch:", epoch)
+        train_hinge(epoch)
+        # test_hinge()
+
+    print("Optimization Finished!")
+    print("Hinge time elapsed: {:.4f}s".format(time.time() - t_total))
+
+    # Testing
+    # test_hinge()
+
+    print("======================")
+
+    phase3 = True
+    model_single2 = GCN_single(nfeat=4,
+                nhid=args.hidden,
+                nclass=2,
+                dropout=args.dropout,
+                gc2_weight = model_hinge.gc2.weight)
+    optimizer_single2 = optim.Adam(model_single2.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+
+    for epoch in range(args.epochs):
+        print("turn:", turn, ", epoch:", epoch)
+        if (train_single()):
+            break
+    test_single(turn)
+
+    phase3 = False
+    print("##########################################")
+    fo.close()
+
