@@ -1,19 +1,19 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from layers import GraphConvolution
+from layers_cuda import GraphConvolution
 import numpy as np
 import dgl
 from dgl.nn.pytorch.conv import ChebConv
 import scipy.sparse as ss
 
 class GCN_single(nn.Module):
-    def __init__(self, nfeat, nhid, nclass, dropout, gc2_weight=None):
+    def __init__(self, nfeat, nhid, nclass, dropout):
         super(GCN_single, self).__init__()
 
-        self.gc1 = GraphConvolution(nfeat, nhid)
-        self.gc2 = GraphConvolution(nhid, 2, gc2_weight)
-        self.gc3 = nn.Linear(2, 1)
+        self.gc1 = GraphConvolution(nfeat, nhid).cuda()
+        self.gc2 = GraphConvolution(nhid, 2).cuda()
+        self.gc3 = nn.Linear(2, 1).cuda()
         self.dropout = dropout
 
     def forward(self, x, adj):
@@ -28,18 +28,22 @@ class GCN_single(nn.Module):
         
         return x
 
+    def check(self):
+        self.gc1.check()
+        self.gc2.check()
+
 
 class GCN_hinge(nn.Module):
-    def __init__(self, nfeat, nhid, nclass, dropout, gc2_weight):
+    def __init__(self, nfeat, nhid, nclass, dropout):
         super(GCN_hinge, self).__init__()
 
-        self.gc1 = ChebConv(nfeat, nhid, 3)
-        self.gc2 = GraphConvolution(nhid, 2, gc2_weight)
+        self.gc1 = ChebConv(nfeat, nhid, 3).cuda()
+        self.gc2 = GraphConvolution(nhid, 2).cuda()
         self.dropout = dropout
 
     def forward(self, x, adj):
         adj_ss = ss.coo_matrix((adj), shape=(adj.shape[0],adj.shape[1]))
-        adj = torch.Tensor(adj)
+        adj = torch.Tensor(adj).cuda()
         g = dgl.DGLGraph()
         g.from_scipy_sparse_matrix(adj_ss)
         
