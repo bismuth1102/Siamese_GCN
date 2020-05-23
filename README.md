@@ -41,7 +41,7 @@ auc: 0.8873510560941829<br>
 
 * For this project, training on GPU is even slower than CPU. I think this is because molecules have small graph structures, GPU is not good at analyzing small graph.<br>
 
-* GCN_hinge has two layers. The weight of first layer, whether using ChebConv or common GCN, has the shape of feature*hidden. The weight of second layer has the shape of hidden*n. After passing a max-pooling at last, I can get a vector of 1*n. At first the performance was always bad when I picked n=10. Then I found that when n goes smaller, performance will be better. I think this is also because the small graph structures of molecules. Molecules don't need that many features to describe them.<br>
+* GCN_hinge has two layers. The weight of first layer, whether using ChebConv or common GCN, has the shape of feature\*hidden. The weight of second layer has the shape of hidden\*n. After passing a max-pooling at last, I can get a vector of 1*n. At first the performance was always bad when I picked n=10. Then I found that when n goes smaller, performance will be better. I think this is also because the small graph structures of molecules. Molecules don't need that many features to describe them.<br>
 
 
 
