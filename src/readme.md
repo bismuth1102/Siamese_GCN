@@ -6,4 +6,4 @@ The difference between `models_cuda.py` and `models_cheby_cuda.py` is that the f
 
 `read.py` is responsible for read data in data/res_gcn and analysis accuracy and auc on ten folders.
 
-To run the code, just do ./cuda.sh
+To run the code, do ./cuda.sh
